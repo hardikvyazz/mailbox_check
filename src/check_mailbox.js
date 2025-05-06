@@ -97,7 +97,7 @@
             return;
           }
 
-          console.log(`🔍 Checking: ${email}`);
+          // console.log(`🔍 Checking: ${email}`);
           const mxRecords = await getCachedMX(domain);
           if (!mxRecords.length) {
             results.push({ email, status: 'No MX Records ❌' });
@@ -106,7 +106,7 @@
 
           const mxHost = mxRecords[0].exchange;
           const { status } = await smtpProbe(mxHost, email);
-          console.log(`📬 ${email}: ${status}`);
+          console.log(`${email},${status}`);
           results.push({ email, status });
         }));
 
