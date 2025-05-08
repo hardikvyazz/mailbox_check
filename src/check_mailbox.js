@@ -5,8 +5,9 @@
   const csv = require('csv-parser');
   const path = require('path');
   const { default: pLimit } = await import('p-limit');
+  const readline = require('readline');
 
-  const INPUT_FILE = '../data/notify_nop_May05.csv';
+  const INPUT_FILE = '../data/email.csv';
   const inputBaseName = path.basename(INPUT_FILE); // => 'notify_nop_May05.csv'
   const { name: fileNameWithoutExt, ext } = path.parse(inputBaseName);
   const OUTPUT_FILE = `${fileNameWithoutExt}_mailbox_report${ext}`;
@@ -77,43 +78,90 @@
     });
   }
 
+
   function writeReport() {
     const header = 'email,status\n';
     const rows = results.map(r => `${r.email},${r.status}`).join('\n');
-    fs.writeFileSync(OUTPUT_FILE, header + rows);
-    console.log(`✅ Report written to ${OUTPUT_FILE}`);
+    fs.appendFileSync(OUTPUT_FILE, header + rows);
+    // console.log(`✅ Report written to ${OUTPUT_FILE}`);
   }
 
-  async function processEmails() {
-    const emails = [];
-    fs.createReadStream(INPUT_FILE)
-      .pipe(csv())
-      .on('data', (row) => emails.push(row.email))
-      .on('end', async () => {
-        const tasks = emails.map(email => limit(async () => {
-          const domain = email.split('@')[1];
-          if (domain !== 'gmail.com') {
-            results.push({ email, status: '' });
-            return;
-          }
+  let lastLine = -1;
+  async function readInputFile() {
+    const inputStream = fs.createReadStream(INPUT_FILE);
+    const rl = readline.createInterface({
+      input: inputStream,
+      crlfDelay: Infinity,
+    });
 
-          // console.log(`🔍 Checking: ${email}`);
-          const mxRecords = await getCachedMX(domain);
-          if (!mxRecords.length) {
-            results.push({ email, status: 'No MX Records ❌' });
-            return;
-          }
+  const lines = [];
+  let startLine = lastLine + 1;
+  const endLine = startLine + 10;
+  lastLine = endLine;
 
-          const mxHost = mxRecords[0].exchange;
-          const { status } = await smtpProbe(mxHost, email);
-          console.log(`${email},${status}`);
-          results.push({ email, status });
-        }));
+  let currentLine = 0;
+  const startFrom = 0; // Start reading from line 1000
 
-        await Promise.all(tasks);
+  for await (const line of rl) {
+  currentLine++;
+  if (currentLine < startFrom) continue;
+  lines.push(line);
+}
+  return lines; 
+  }
+
+  async function validateEmail(email) {
+
+    if (!email || !email.includes('@')) {
+      return { email, status: 'Invalid Format' };
+    }
+
+    const domain = email.split('@')[1];
+    if (domain !== 'gmail.com') {
+      return { email, status: '' };
+    }
+
+    // console.log(`🔍 Checking: ${email}`);
+    const mxRecords = await getCachedMX(domain);
+    if (!mxRecords.length) {
+      return { email, status: 'No MX Records' };
+    }
+
+    const mxHost = mxRecords[0].exchange;
+    const { status } = await smtpProbe(mxHost, email);
+    console.log(`${email},${status}`);
+    
+    return { email, status };
+
+  }
+
+  async function init() {
+
+    while (true) {
+      const emails = await readInputFile();
+      if(emails.length === 0) {
+        console.log('No more lines to read.');
+        break;
+      }
+
+      let batch = [];
+      for (let i = 0; i < emails.length; i++) {
+
+        batch.push(validateEmail(emails[i]));
+        if (batch.length === 10) {
+          const resultsBatch = await Promise.all(batch);
+          results.push(...resultsBatch);
+          batch = [];
+        }
+      }
+
+      // Save processed 1000 emails to the report file
+      if (results.length > 0) {
         writeReport();
-      });
+        console.log(`Processed ${results.length} emails.`);
+      }
+    }
   }
 
-  await processEmails();
+  await init();
 })();
